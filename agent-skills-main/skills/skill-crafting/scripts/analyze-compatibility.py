@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+"""
+Cross-Platform Compatibility Analyzer for Agent Skills.
+
+Checks which fields are part of the Agent Skills standard (cross-platform)
+versus Claude Code extensions (platform-specific).
+"""
+
+import sys
+from pathlib import Path
+
+from frontmatter import parse_frontmatter as parse_content_frontmatter
+
+
+# Agent Skills spec (agentskills.io) - the six fields accepted by claude.ai skill
+# uploads, the Skills API, and package_skill.py. Anything else fails validation there
+# with "Unexpected key(s) in SKILL.md frontmatter".
+STANDARD_FIELDS = {
+    'name': 'Optional - defaults to directory name; sets the display label',
+    'description': 'Recommended - falls back to first paragraph of the body',
+    'license': 'Optional - license name or file reference',
+    'compatibility': 'Optional - environment prerequisites, max 500 chars',
+    'metadata': 'Optional - free-form map for your own tooling',
+    'allowed-tools': 'Optional - tool pre-authorization for the invoking turn',
+}
+
+# Claude Code extensions - rejected by the spec-only paths above
+CLAUDE_CODE_FIELDS = {
+    'when_to_use': 'Extra trigger phrases, appended to description in the listing',
+    'argument-hint': 'Autocomplete hint for expected arguments',
+    'arguments': 'Named positional arguments for $name substitution',
+    'disable-model-invocation': 'Only the user can invoke the skill',
+    'user-invocable': 'Only Claude can invoke the skill',
+    'disallowed-tools': 'Tools removed from the pool while the skill is active',
+    'model': 'Model override for the rest of the turn',
+    'effort': 'Effort level override while the skill is active',
+    'context': 'Execution context (fork for isolated subagent)',
+    'agent': 'Subagent type used when context: fork is set',
+    'background': 'With context: fork, whether to run in the background (default true)',
+    'paths': 'Globs limiting when the skill auto-activates',
+    'shell': 'Shell for inline command injection (bash or powershell)',
+    'hooks': 'Event hooks registered on invocation, persisting for the session',
+}
+
+# Known hook types
+HOOK_TYPES = ['PreToolUse', 'PostToolUse', 'UserPromptSubmit', 'Stop', 'Notification', 'SessionStart', 'SubagentStop']
+
+
+def parse_frontmatter(skill_path: Path) -> dict:
+    """Parse SKILL.md frontmatter."""
+    skill_md = skill_path / 'SKILL.md' if skill_path.is_dir() else skill_path
+
+    if not skill_md.exists():
+        return {'error': f"File not found: {skill_md}"}
+
+    try:
+        content = skill_md.read_text(encoding='utf-8')
+        data, _ = parse_content_frontmatter(content)
+        if not data:
+            return {'error': "Missing YAML frontmatter"}
+        return data
+    except (ValueError, OSError) as e:
+        return {'error': f"YAML parse error: {e}"}
+
+
+def analyze_compatibility(frontmatter: dict) -> dict:
+    """Analyze frontmatter for platform compatibility."""
+    if 'error' in frontmatter:
+        return frontmatter
+
+    result = {
+        'standard_fields': [],
+        'claude_code_fields': [],
+        'unknown_fields': [],
+        'hooks_detected': [],
+        'is_cross_platform': True,
+        'recommendations': [],
+    }
+
+    for field, value in frontmatter.items():
+        if field in STANDARD_FIELDS:
+            result['standard_fields'].append({
+                'field': field,
+                'value': str(value)[:50] + '...' if len(str(value)) > 50 else str(value),
+                'note': STANDARD_FIELDS[field],
+            })
+        elif field in CLAUDE_CODE_FIELDS:
+            result['claude_code_fields'].append({
+                'field': field,
+                'note': CLAUDE_CODE_FIELDS[field],
+            })
+            result['is_cross_platform'] = False
+
+            # Analyze hooks
+            if field == 'hooks' and isinstance(value, dict):
+                for hook_type in value:
+                    result['hooks_detected'].append(hook_type)
+
+        else:
+            result['unknown_fields'].append(field)
+            result['is_cross_platform'] = False
+            result['recommendations'].append(
+                f"Check or remove unknown field: {field}; platform support is unverified")
+
+    # Check required fields
+    if 'name' not in frontmatter:
+        result['recommendations'].append("Add required field: name")
+    if 'description' not in frontmatter:
+        result['recommendations'].append("Add required field: description")
+
+    return result
+
+
+def print_analysis(result: dict, name: str = 'Unknown'):
+    """Print compatibility analysis."""
+    print(f"\n=== Platform Compatibility: {name} ===\n")
+
+    if 'error' in result:
+        print(f"❌ Error: {result['error']}")
+        return 1
+
+    # Cross-platform status
+    if result['unknown_fields']:
+        print("⚠️  Compatibility unverified (unknown frontmatter fields)")
+    elif result['is_cross_platform']:
+        print("✅ Fully cross-platform (Agent Skills standard only)")
+    else:
+        print("⚠️  Uses Claude Code extensions (spec-only validators reject these fields)")
+
+    # Standard fields
+    print("\n--- Agent Skills Standard (cross-platform) ---")
+    for item in result['standard_fields']:
+        print(f"  ✅ {item['field']}: {item['note']}")
+
+    # Claude Code extensions
+    if result['claude_code_fields']:
+        print("\n--- Claude Code Extensions ---")
+        for item in result['claude_code_fields']:
+            print(f"  🔵 {item['field']}: {item['note']}")
+
+        if result['hooks_detected']:
+            print(f"\n  Hooks: {', '.join(result['hooks_detected'])}")
+
+    # Unknown fields
+    if result['unknown_fields']:
+        print("\n--- Unknown Fields ---")
+        for field in result['unknown_fields']:
+            print(f"  ❓ {field}")
+
+    # Recommendations
+    if result['recommendations']:
+        print("\n📝 Recommendations:")
+        for rec in result['recommendations']:
+            print(f"   - {rec}")
+
+    # Platform support summary
+    print("\n--- Platform Support ---")
+    platforms = [
+        ('Claude Code', True),
+        ('GitHub Copilot', result['is_cross_platform']),
+        ('VS Code Copilot', result['is_cross_platform']),
+        ('Cursor', result['is_cross_platform']),
+        ('Codex CLI', result['is_cross_platform']),
+        ('OpenCode', result['is_cross_platform']),
+        ('Gemini CLI', result['is_cross_platform']),
+    ]
+
+    for platform, supported in platforms:
+        if result['unknown_fields']:
+            status = "❓ Unverified fields"
+        else:
+            status = "✅ Full" if supported else "⚠️ Core only"
+        print(f"  {platform:20} {status}")
+
+    return 0
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: analyze-compatibility.py <path/to/skill/>")
+        print("\nChecks which fields are cross-platform vs Claude Code specific.")
+        sys.exit(1)
+
+    skill_path = Path(sys.argv[1])
+    frontmatter = parse_frontmatter(skill_path)
+
+    name = frontmatter.get('name', 'Unknown') if 'error' not in frontmatter else 'Unknown'
+    result = analyze_compatibility(frontmatter)
+
+    exit_code = print_analysis(result, name)
+    sys.exit(exit_code)
+
+
+if __name__ == '__main__':
+    main()
