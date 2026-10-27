@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "agent-skills",
+  "version": "1.6.1",
+  "description": "Portable skills library with output styles: documentation lookup, GitHub operations, dependency intelligence, UI/UX patterns, and skill crafting",
+  "author": {
+    "name": "Arvind Menon",
+    "url": "https://github.com/arvindand"
+  },
+  "repository": "https://github.com/arvindand/agent-skills",
+  "homepage": "https://agentskills.io",
+  "license": "MIT",
+  "outputStyles": "./output-styles/",
+  "keywords": [
+    "skills",
+    "claude-code",
+    "ai-coding",
+    "github",
+    "documentation",
+    "maven",
+    "ui-ux"
+  ]
+}
